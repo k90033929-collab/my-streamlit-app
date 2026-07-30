@@ -5,6 +5,10 @@ import pandas as pd
 import numpy as np
 import matplotlib
 import matplotlib.pyplot as plt
+# Streamlit 서버에 설치된 나눔고딕 폰트 지정
+plt.rc('font', family='NanumGothic')
+# 마이너스(-) 기호가 깨지는 현상 방지
+plt.rc('axes', unicode_minus=False)
 import seaborn as sns
 import statsmodels.api as sm
 import streamlit as st
