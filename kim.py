@@ -1,15 +1,13 @@
-import os
-import warnings
-import urllib.request
+import streamlit as st
 import pandas as pd
 import numpy as np
-import matplotlib.pyplot as plt
-import matplotlib.font_manager as fm
-import seaborn as sns
+import plotly.express as px
+import plotly.graph_objects as gg
+from plotly.subplots import make_subplots
 from scipy.stats import spearmanr
 from scipy.optimize import minimize
 from sklearn.ensemble import RandomForestRegressor
-import streamlit as st
+import warnings
 
 warnings.filterwarnings('ignore')
 
@@ -18,28 +16,6 @@ st.set_page_config(
     page_icon="📊",
     layout="wide"
 )
-
-# 폰트 다운로드 및 적용 함수
-def set_korean_font():
-    font_filename = "NanumGothic.ttf"
-    font_url = "https://github.com/google/fonts/raw/main/ofl/nanumgothic/NanumGothic-Regular.ttf"
-    
-    if not os.path.exists(font_filename):
-        try:
-            urllib.request.urlretrieve(font_url, font_filename)
-        except Exception as e:
-            st.error(f"폰트 다운로드 실패: {e}")
-            
-    if os.path.exists(font_filename):
-        fm.fontManager.addfont(font_filename)
-        prop = fm.FontProperties(fname=font_filename)
-        font_name = prop.get_name()
-        
-        plt.rcParams['font.family'] = font_name
-        plt.rcParams['font.sans-serif'] = [font_name]
-        plt.rc('font', family=font_name)
-    
-    plt.rcParams['axes.unicode_minus'] = False
 
 st.title("📊 마케팅 캠페인 성과 분석 & 예산 재배치 시뮬레이터")
 st.markdown("---")
@@ -73,9 +49,6 @@ if uploaded_file is not None:
     avg_roas = (tot_s / tot_b * 100) if tot_b > 0 else 0
     avg_ctr = (tot_clk / tot_imp * 100) if tot_imp > 0 else 0
     avg_cvr = (tot_c / tot_clk * 100) if tot_clk > 0 else 0
-    avg_cpc = tot_b / tot_clk if tot_clk > 0 else 0
-    avg_cpm = (tot_b / tot_imp * 1000) if tot_imp > 0 else 0
-    avg_aov = tot_s / tot_c if tot_c > 0 else 0
 
     tab0, tab1, tab2, tab34 = st.tabs([
         "📊 0단계. 종합 대시보드",
@@ -111,7 +84,6 @@ if uploaded_file is not None:
             media_agg['CVR'] = np.where(media_agg['클릭'] > 0, (media_agg['전환수'] / media_agg['클릭']) * 100, 0)
             media_agg['CTR'] = np.where(media_agg['노출'] > 0, (media_agg['클릭'] / media_agg['노출']) * 100, 0)
             media_agg['ROAS'] = np.where(media_agg['광고비'] > 0, (media_agg['전환매출'] / media_agg['광고비']) * 100, 0)
-            media_agg['AOV'] = np.where(media_agg['전환수'] > 0, media_agg['전환매출'] / media_agg['전환수'], 0)
             media_agg = media_agg.sort_values(by='전환수', ascending=False)
 
             top3_cols = st.columns(3)
@@ -123,54 +95,49 @@ if uploaded_file is not None:
                     st.write(f"• **CVR**: {row['CVR']:.2f}% | **ROAS**: {row['ROAS']:.1f}%")
 
             st.markdown("---")
-            st.subheader("📈 종합 성과 시각화 리포트")
+            st.subheader("📈 종합 성과 시각화 리포트 (Plotly 기반 - 한글 10% 깨짐 없음)")
 
-            # 💡 차트 생성 직전 폰트 강제 주입
-            set_korean_font()
+            # Plotly 6개 차트 서브플롯 구성
+            fig = make_subplots(
+                rows=2, cols=3,
+                subplot_titles=(
+                    '1. 매체별 광고비 & 전환수', '2. 매체별 평균 CPA (전환단가)', '3. 매체별 전환율(CVR) & 클릭률(CTR)',
+                    '4. 캠페인/매체별 전환수 & ROAS', '5. 주요 상품/목적별 전환 비중', '6. 클릭수 대비 전환수 효율'
+                ),
+                specs=[[{"secondary_y": True}, {}, {"secondary_y": True}],
+                       [{}, {"type": "pie"}, {}]]
+            )
 
-            fig, axes = plt.subplots(2, 3, figsize=(18, 10))
-            sns.set_style("whitegrid")
+            # 1. 매체별 광고비 & 전환수
+            fig.add_trace(gg.Bar(x=media_agg['매체'], y=media_agg['광고비'], name='광고비(원)', marker_color='#A0C4FF'), row=1, col=1, secondary_y=False)
+            fig.add_trace(gg.Scatter(x=media_agg['매체'], y=media_agg['전환수'], name='전환수(건)', mode='lines+markers', line=dict(color='#E63946', width=3)), row=1, col=1, secondary_y=True)
 
-            ax1 = axes[0, 0]
-            sns.barplot(data=media_agg, x='매체', y='광고비', color='#A0C4FF', alpha=0.8, ax=ax1)
-            ax2 = ax1.twinx()
-            sns.lineplot(data=media_agg, x='매체', y='전환수', color='#E63946', marker='o', linewidth=2.5, ax=ax2)
-            ax1.set_title('1. 매체별 광고비 & 전환수', fontsize=11, fontweight='bold')
+            # 2. 매체별 CPA
+            fig.add_trace(gg.Bar(x=media_agg['매체'], y=media_agg['CPA'], name='CPA(원)', marker_color='#457B9D'), row=1, col=2)
+            fig.add_hline(y=avg_cpa, line_dash="dash", line_color="red", annotation_text=f"평균 CPA ({avg_cpa:,.0f}원)", row=1, col=2)
 
-            ax_cpa = axes[0, 1]
-            sns.barplot(data=media_agg, x='매체', y='CPA', palette='Blues_r', ax=ax_cpa)
-            ax_cpa.axhline(avg_cpa, color='red', linestyle='--', label=f'평균 CPA ({avg_cpa:,.0f}원)')
-            ax_cpa.set_title('2. 매체별 평균 CPA (전환단가)', fontsize=11, fontweight='bold')
-            ax_cpa.legend(fontsize=9)
+            # 3. CVR & CTR
+            fig.add_trace(gg.Bar(x=media_agg['매체'], y=media_agg['CVR'], name='CVR(%)', marker_color='#4EA8DE'), row=1, col=3, secondary_y=False)
+            fig.add_trace(gg.Scatter(x=media_agg['매체'], y=media_agg['CTR'], name='CTR(%)', mode='lines+markers', line=dict(color='#FFB703', width=3)), row=1, col=3, secondary_y=True)
 
-            ax_cvr = axes[0, 2]
-            sns.barplot(data=media_agg, x='매체', y='CVR', color='#4EA8DE', alpha=0.7, ax=ax_cvr)
-            ax_ctr = ax_cvr.twinx()
-            sns.lineplot(data=media_agg, x='매체', y='CTR', color='#FFB703', marker='s', linewidth=2.5, ax=ax_ctr)
-            ax_cvr.set_title('3. 매체별 전환율(CVR) & 클릭률(CTR)', fontsize=11, fontweight='bold')
-
+            # 4. 전환수 & ROAS
             campaign_col_name = [c for c in df.columns if '캠페인' in c and '목적' not in c]
-            ax_camp = axes[1, 0]
             if '전환수' in df.columns and 'ROAS' in df.columns:
                 camp_agg_plot = df.groupby(['매체'] if '매체' in df.columns else campaign_col_name[0]).agg({'전환수':'sum', 'ROAS':'mean', '광고비':'sum'}).reset_index()
-                sns.scatterplot(data=camp_agg_plot, x='전환수', y='ROAS', size='광고비', sizes=(40, 400), hue='ROAS', palette='viridis', alpha=0.8, ax=ax_camp)
-                ax_camp.axhline(avg_roas, color='gray', linestyle=':', label=f'평균 ROAS({avg_roas:.0f}%)')
-                ax_camp.set_title('4. 매체/캠페인별 전환수 & ROAS 분포', fontsize=11, fontweight='bold')
+                fig.add_trace(gg.Scatter(x=camp_agg_plot['전환수'], y=camp_agg_plot['ROAS'], text=camp_agg_plot['매체' if '매체' in df.columns else campaign_col_name[0]], mode='markers', marker=dict(size=camp_agg_plot['광고비']/camp_agg_plot['광고비'].max()*40 + 10, color=camp_agg_plot['ROAS'], colorscale='Viridis', showscale=True), name='캠페인 분포'), row=2, col=1)
 
+            # 5. 주요 상품/목적별 전환 비중
             product_col = [c for c in df.columns if any(kw in c for kw in ['상품', '목적', '구분', '유형']) and '캠페인' not in c]
-            ax_pie = axes[1, 1]
             if product_col and '전환수' in df.columns:
-                p_data = df.groupby(product_col[0])['전환수'].sum().nlargest(5)
-                ax_pie.pie(p_data, labels=p_data.index, autopct='%1.1f%%', startangle=140, colors=sns.color_palette("Set2"))
-                ax_pie.set_title(f'5. 주요 {product_col[0]}별 전환 비중', fontsize=11, fontweight='bold')
+                p_data = df.groupby(product_col[0])['전환수'].sum().nlargest(5).reset_index()
+                fig.add_trace(gg.Pie(labels=p_data[product_col[0]], values=p_data['전환수'], name='전환 비중'), row=2, col=2)
 
-            ax_scat = axes[1, 2]
+            # 6. 클릭수 대비 전환수
             if '클릭' in df.columns and '전환수' in df.columns:
-                sns.scatterplot(data=df, x='클릭', y='전환수', hue='매체' if '매체' in df.columns else None, alpha=0.7, s=60, ax=ax_scat)
-                ax_scat.set_title('6. 클릭수 대비 전환수 효율 상관성', fontsize=11, fontweight='bold')
+                fig.add_trace(gg.Scatter(x=df['클릭'], y=df['전환수'], mode='markers', marker=dict(color='#2A9D8F'), name='클릭 vs 전환'), row=2, col=3)
 
-            plt.tight_layout()
-            st.pyplot(fig)
+            fig.update_layout(height=800, showlegend=False, font=dict(family="Malgun Gothic, NanumGothic, Apple SD Gothic Neo, sans-serif"))
+            st.plotly_chart(fig, use_container_width=True)
 
     MAIN_KPI = '전환수'
     COST_METRICS = ['전환 단가(CPA)', 'CPC', 'CPM']
@@ -201,8 +168,7 @@ if uploaded_file is not None:
         top3_metrics = [item[0] for item in sorted_ensemble[:3]]
 
         with tab1:
-            st.subheader("🎯 메인 KPI 영향 지표 평가 (상관분석 + RF 중요도 + 도메인 가드레일)")
-            
+            st.subheader("🎯 메인 KPI 영향 지표 평가")
             t1_col1, t1_col2 = st.columns([1, 1])
             with t1_col1:
                 st.markdown("### 📊 Top 3 핵심 영향 지표")
@@ -211,24 +177,17 @@ if uploaded_file is not None:
 
             with t1_col2:
                 top_df = pd.DataFrame(sorted_ensemble, columns=['지표', '앙상블 점수'])
-                set_korean_font()
-                fig_top, ax_top = plt.subplots(figsize=(8, 4))
-                colors = ['#1D3557' if i < 3 else '#A8DADC' for i in range(len(top_df))]
-                sns.barplot(data=top_df, x='앙상블 점수', y='지표', palette=colors, ax=ax_top)
-                ax_top.set_title('메인 KPI 영향 지표 선별 결과 (TOP 3 강조)', fontsize=12, fontweight='bold')
-                st.pyplot(fig_top)
+                fig_top = px.bar(top_df, x='앙상블 점수', y='지표', orientation='h', title='메인 KPI 영향 지표 선별 결과 (TOP 3)', color='앙상블 점수', color_continuous_scale='Blues')
+                fig_top.update_layout(font=dict(family="Malgun Gothic, NanumGothic, Apple SD Gothic Neo, sans-serif"))
+                st.plotly_chart(fig_top, use_container_width=True)
 
         with tab2:
-            st.subheader("🔮 TOP 3 지표 10% 개선 시 시뮬레이션 (직관적 수치 변화 브리핑)")
-            st.write("지표가 10% 개선되었을 때 예상되는 순증가 전환 건수를 텍스트 형태로 산출합니다.")
-
+            st.subheader("🔮 TOP 3 지표 10% 개선 시 시뮬레이션")
             for metric in top3_metrics:
                 avg_val = X_df[metric].mean()
                 if avg_val <= 0: continue
-
                 delta_sign = -1.0 if metric in COST_METRICS else 1.0
                 target_val = avg_val * (1 + delta_sign * 0.10)
-
                 is_ratio_metric = metric in ['CTR', '전환률']
                 if is_ratio_metric:
                     display_multiplier = 100.0 if avg_val <= 1.0 else 1.0
@@ -241,7 +200,6 @@ if uploaded_file is not None:
                 X_log = np.log1p(X_df[[metric]])
                 log_rf = RandomForestRegressor(n_estimators=50, random_state=42)
                 log_rf.fit(X_log, y_df)
-                
                 pred_base_log = log_rf.predict(np.log1p([[avg_val]]))[0]
                 pred_target_log = log_rf.predict(np.log1p([[target_val]]))[0]
                 gain_log = max(0.0, pred_target_log - pred_base_log)
@@ -249,19 +207,16 @@ if uploaded_file is not None:
                 X_cf_base = X_df.copy()
                 X_cf_target = X_df.copy()
                 X_cf_target[metric] = target_val
-
                 pred_base_rf = rf_model.predict(X_cf_base).mean()
                 pred_target_rf = rf_model.predict(X_cf_target).mean()
                 gain_rf = max(0.0, pred_target_rf - pred_base_rf)
 
                 blended_gain = (gain_log + gain_rf) / 2.0
                 action_type = "10% 절감" if metric in COST_METRICS else "10% 개선"
-
                 st.success(f"📌 **[{metric}] {action_type}** ({val_text})\n\n👉 **기대 전환 추가 증가량:** 약 **+{blended_gain:.1f}건** 순증가")
 
         with tab34:
-            st.subheader("⚖️ 예산 재배치 감액 & 증액 시뮬레이션 (1안 vs 2안 시나리오)")
-
+            st.subheader("⚖️ 예산 재배치 감액 & 증액 시뮬레이션")
             campaign_col = campaign_col_name[0] if campaign_col_name else None
             objective_col = [c for c in df.columns if '목적' in c or 'objective' in c.lower()][0] if any('목적' in c or 'objective' in c.lower() for c in df.columns) else None
             media_col = '매체' if '매체' in df.columns else None
@@ -324,7 +279,6 @@ if uploaded_file is not None:
 
                     c1 = 0.0 if (sim_cut / cur_budget) <= 0.05 else sim_cut
                     l1 = max(0.0, cur_conv - hill_s_curve(cur_budget - c1, max_conv_est, k_est)) if c1 > 0 else 0.0
-
                     c2 = c1 * 0.5
                     l2 = max(0.0, cur_conv - hill_s_curve(cur_budget - c2, max_conv_est, k_est)) if c2 > 0 else 0.0
 
@@ -363,10 +317,8 @@ if uploaded_file is not None:
                     for _, row in scale_df.iterrows():
                         alloc_budget = saved_budget * opt_weights[idx_counter]
                         idx_counter += 1
-
                         cur_budget = row[budget_col]
                         cur_conv = row[kpi_col]
-                        
                         max_conv_est = cur_conv * 2.0
                         k_est = cur_budget * ((max_conv_est / max(cur_conv, 0.1) - 1) ** (1 / 1.5))
 
@@ -377,10 +329,8 @@ if uploaded_file is not None:
                         while sim_add_budget + step_size <= alloc_budget:
                             next_b = cur_budget + sim_add_budget + step_size
                             prev_b = cur_budget + sim_add_budget
-                            
                             delta_c = hill_s_curve(next_b, max_conv_est, k_est) - hill_s_curve(prev_b, max_conv_est, k_est)
                             marginal_cpa = step_size / delta_c if delta_c > 0 else np.inf
-
                             if marginal_cpa > mcpa_threshold: break
                             sim_add_budget += step_size
 
@@ -413,11 +363,10 @@ if uploaded_file is not None:
                         st.write(f"• **2안(50%)** : 기존 {cur_budget:,.0f}원 ➔ **조정 {cur_budget-c2:,.0f}원** (`-{c2:,.0f}원`, -{pct2:.1f}%) | 예상 손실: `-{l2:.1f}건`")
 
                 if not has_cuts:
-                    st.info("💡 감액 추천 대상 캠페인이 없습니다. (모든 캠페인의 CPA가 평균 이하이거나 정상 범위입니다)")
+                    st.info("💡 감액 추천 대상 캠페인이 없습니다.")
 
                 st.markdown("---")
                 st.markdown("### 📈 4단계. 고효율 캠페인 증액 시뮬레이션")
-                
                 col_sc1, col_sc2 = st.columns(2)
                 with col_sc1:
                     st.markdown("#### [ 1안 감액 연동 증액 추천 ]")
@@ -433,7 +382,6 @@ if uploaded_file is not None:
 
                 st.markdown("---")
                 st.markdown("### 📋 최종 시뮬레이션 비교 리포트")
-                
                 rep_col1, rep_col2 = st.columns(2)
                 with rep_col1:
                     st.info(f"""
@@ -454,6 +402,5 @@ if uploaded_file is not None:
                     
                     🎯 **최종 전환 순증가 (Net Gain): 약 +{net_gain_2:+.1f}건**
                     """)
-
 else:
     st.info("👈 좌측 사이드바에서 분석할 마케팅 성과 엑셀(.xlsx) 파일을 업로드해주세요.")
