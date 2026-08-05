@@ -15,23 +15,13 @@ import streamlit as st
 warnings.filterwarnings('ignore')
 
 # -----------------------------------------------------------------------------
-# Page Configuration
+# Font & Style Setup (Matplotlib 캐시 강제 재설정 및 웹폰트 완벽 주입)
 # -----------------------------------------------------------------------------
-st.set_page_config(
-    page_title="디지털 마케팅 캠페인 성과 분석 & 예산 재배치 시뮬레이터",
-    page_icon="📊",
-    layout="wide"
-)
-
-# -----------------------------------------------------------------------------
-# Font & Style Setup (웹 폰트 자동 다운로드 및 강제 로드 방식)
-# -----------------------------------------------------------------------------
-@st.cache_resource
 def set_korean_font():
     font_filename = "NanumGothic.ttf"
     font_url = "https://github.com/google/fonts/raw/main/ofl/nanumgothic/NanumGothic-Regular.ttf"
     
-    # 폰트 파일이 없으면 웹에서 다운로드
+    # 폰트 다운로드
     if not os.path.exists(font_filename):
         try:
             urllib.request.urlretrieve(font_url, font_filename)
@@ -39,26 +29,19 @@ def set_korean_font():
             st.error(f"폰트 다운로드 실패: {e}")
             
     if os.path.exists(font_filename):
+        # Matplotlib 폰트 매니저 강제 캐시 갱신
         fm.fontManager.addfont(font_filename)
         prop = fm.FontProperties(fname=font_filename)
         font_name = prop.get_name()
+        
+        # 전역 폰트 설정
+        plt.rcParams['font.family'] = font_name
+        plt.rcParams['font.sans-serif'] = [font_name]
         plt.rc('font', family=font_name)
-    else:
-        # 로컬 기본 폰트 시도
-        font_paths = [
-            '/usr/share/fonts/truetype/nanum/NanumBarunGothic.ttf',
-            '/usr/share/fonts/truetype/nanum/NanumGothic.ttf',
-            'C:/Windows/Fonts/malgun.ttf'
-        ]
-        for fp in font_paths:
-            if os.path.exists(fp):
-                fm.fontManager.addfont(fp)
-                font_name = fm.FontProperties(fname=fp).get_name()
-                plt.rc('font', family=font_name)
-                break
-
+    
     plt.rcParams['axes.unicode_minus'] = False # 마이너스 기호 깨짐 방지
 
+# 차트 생성 시마다 폰트를 강제 재설정하도록 호출
 set_korean_font()
 
 # -----------------------------------------------------------------------------
