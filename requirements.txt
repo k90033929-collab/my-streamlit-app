@@ -6,3 +6,5 @@ seaborn
 statsmodels
 openpyxl
 koreanize-matplotlib
+scipy
+scikit-learn
