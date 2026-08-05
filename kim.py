@@ -1,408 +1,491 @@
-import os
-import platform
-import warnings
+import streamlit as st
 import pandas as pd
 import numpy as np
-import matplotlib
 import matplotlib.pyplot as plt
-# Streamlit 서버에 설치된 나눔고딕 폰트 지정
-plt.rc('font', family='NanumGothic')
-# 마이너스(-) 기호가 깨지는 현상 방지
-plt.rc('axes', unicode_minus=False)
+import matplotlib.font_manager as fm
 import seaborn as sns
-import statsmodels.api as sm
-import streamlit as st
+from scipy.stats import spearmanr
+from scipy.optimize import minimize
+from sklearn.ensemble import RandomForestRegressor
+import os
+import warnings
 
-# ==========================================
-# koreanize-matplotlib 안전 임포트 (로컬 및 Streamlit Cloud 호환)
-# ==========================================
-try:
-    import koreanize_matplotlib
-except ImportError:
-    pass
-
-# ==========================================
-# 1. 기본 설정 및 한글 폰트 처리
-# ==========================================
-st.set_page_config(page_title="광고 성과 분석 & 예산 최적화", layout="wide")
+# 경고 무시 및 Matplotlib 로깅 차단
 warnings.filterwarnings('ignore')
-matplotlib.set_loglevel('error')
 
+# -----------------------------------------------------------------------------
+# Page Configuration
+# -----------------------------------------------------------------------------
+st.set_page_config(
+    page_title="디지털 마케팅 캠페인 성과 분석 & 예산 재배치 시뮬레이터",
+    page_icon="📊",
+    layout="wide"
+)
+
+# -----------------------------------------------------------------------------
+# Font & Style Setup
+# -----------------------------------------------------------------------------
 @st.cache_resource
 def set_korean_font():
-    """운영체제에 따른 한글 폰트 설정"""
-    system_name = platform.system()
-    if system_name == 'Windows':
-        plt.rc('font', family='Malgun Gothic')
-    elif system_name == 'Darwin': # Mac
-        plt.rc('font', family='AppleGothic')
-    else: # Linux/Colab/Streamlit Cloud
-        plt.rc('font', family='NanumGothic')
-    plt.rcParams['axes.unicode_minus'] = False # 마이너스 기호 깨짐 방지
+    font_paths = [
+        '/usr/share/fonts/truetype/nanum/NanumBarunGothic.ttf',
+        '/usr/share/fonts/truetype/nanum/NanumGothic.ttf',
+        'C:/Windows/Fonts/malgun.ttf'
+    ]
+    for fp in font_paths:
+        if os.path.exists(fp):
+            fm.fontManager.addfont(fp)
+            font_name = fm.FontProperties(fname=fp).get_name()
+            plt.rc('font', family=font_name)
+            break
+    plt.rcParams['axes.unicode_minus'] = False
 
 set_korean_font()
 
-# ==========================================
-# 메인 UI 타이틀
-# ==========================================
-st.title("📊 광고 성과 분석 및 예산 최적화 대시보드")
-st.markdown("엑셀 데이터를 업로드하면 **상관분석, 회귀분석 예측 시나리오, 매체별 분석, 예산 재분배(S-Curve) 시뮬레이션**을 자동 수행합니다.")
+# -----------------------------------------------------------------------------
+# Title & Description
+# -----------------------------------------------------------------------------
+st.title("📊 마케팅 캠페인 성과 분석 & 예산 재배치 시뮬레이터")
+st.markdown("---")
 
-# ==========================================
-# 2. 엑셀 파일 업로드 위젯
-# ==========================================
-uploaded_file = st.file_uploader("📂 '표준업로드_템플릿.xlsx' (데이터가 입력된 엑셀 파일)을 선택하여 업로드해주세요.", type=['xlsx'])
+# -----------------------------------------------------------------------------
+# File Upload
+# -----------------------------------------------------------------------------
+st.sidebar.header("📁 데이터 업로드")
+uploaded_file = st.sidebar.file_uploader("성과 데이터 엑셀(.xlsx) 파일 업로드", type=["xlsx", "xls"])
 
 if uploaded_file is not None:
     df = pd.read_excel(uploaded_file)
-    st.success(f"✅ '{uploaded_file.name}' 파일 업로드 성공! (총 데이터 수: {len(df)}행)")
-
-    # ==========================================
-    # 3. 데이터 전처리 및 지표 속성 명확화
-    # ==========================================
     df.columns = df.columns.astype(str).str.strip()
 
-    template_metric_cols = [
-        '광고비', '노출', '클릭', '전환수', '전환매출',
-        'CTR', 'CPC', 'CPM', '전환률', '전환 단가(CPA)', 'ROAS', '객단가'
-    ]
-
-    available_metrics = []
-    for col in template_metric_cols:
+    # 필수 수치 데이터 변환
+    num_cols = ['광고비', '노출', '클릭', '전환수', '전환매출', 'CTR', 'CPC', 'CPM', '전환률', '전환 단가(CPA)', 'ROAS', '객단가']
+    for col in num_cols:
         if col in df.columns:
-            converted = pd.to_numeric(df[col], errors='coerce')
-            if converted.dropna().nunique() > 1:
-                df[col] = converted
-                available_metrics.append(col)
+            df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
 
+    # 파생 변수 보완 계산
+    if 'CTR' not in df.columns and '노출' in df.columns and '클릭' in df.columns:
+        df['CTR'] = np.where(df['노출'] > 0, (df['클릭'] / df['노출']) * 100, 0)
+    if '전환률' not in df.columns and '클릭' in df.columns and '전환수' in df.columns:
+        df['전환률'] = np.where(df['클릭'] > 0, (df['전환수'] / df['클릭']) * 100, 0)
+    if 'ROAS' not in df.columns and '광고비' in df.columns and '전환매출' in df.columns:
+        df['ROAS'] = np.where(df['광고비'] > 0, (df['전환매출'] / df['광고비']) * 100, 0)
+
+    # 전체 통계 집계
+    tot_b = df['광고비'].sum() if '광고비' in df.columns else 0
+    tot_c = df['전환수'].sum() if '전환수' in df.columns else 0
+    tot_s = df['전환매출'].sum() if '전환매출' in df.columns else 0
+    tot_imp = df['노출'].sum() if '노출' in df.columns else 0
+    tot_clk = df['클릭'].sum() if '클릭' in df.columns else 0
+
+    avg_cpa = tot_b / tot_c if tot_c > 0 else 0
+    avg_roas = (tot_s / tot_b * 100) if tot_b > 0 else 0
+    avg_ctr = (tot_clk / tot_imp * 100) if tot_imp > 0 else 0
+    avg_cvr = (tot_c / tot_clk * 100) if tot_clk > 0 else 0
+    avg_cpc = tot_b / tot_clk if tot_clk > 0 else 0
+    avg_cpm = (tot_b / tot_imp * 1000) if tot_imp > 0 else 0
+    avg_aov = tot_s / tot_c if tot_c > 0 else 0
+
+    # -------------------------------------------------------------------------
+    # TAB 구성
+    # -------------------------------------------------------------------------
+    tab0, tab1, tab2, tab34 = st.tabs([
+        "📊 0단계. 종합 대시보드",
+        "🎯 1단계. TOP 3 지표 선별",
+        "🔮 2단계. TOP 3 지표 개선 시뮬레이션",
+        "⚖️ 3&4단계. 예산 재배치(감액/증액) 시뮬레이션"
+    ])
+
+    with tab0:
+        st.subheader("🌐 전체 캠페인 성과 종합 요약 (Executive Dashboard)")
+        
+        # Key Metrics Cards
+        m_col1, m_col2, m_col3, m_col4 = st.columns(4)
+        m_col1.metric("총 집행 광고비", f"{tot_b:,.0f} 원")
+        m_col2.metric("총 전환수", f"{tot_c:,.0f} 건")
+        m_col3.metric("총 전환 매출액", f"{tot_s:,.0f} 원")
+        m_col4.metric("총 클릭수 (노출수)", f"{tot_clk:,.0f} 회", f"노출 {tot_imp:,.0f}회")
+
+        m_col5, m_col6, m_col7, m_col8 = st.columns(4)
+        m_col5.metric("평균 CPA (전환단가)", f"{avg_cpa:,.0f} 원")
+        m_col6.metric("평균 ROAS", f"{avg_roas:,.1f}%")
+        m_col7.metric("평균 CVR (전환율)", f"{avg_cvr:.2f}%")
+        m_col8.metric("평균 CTR (클릭률)", f"{avg_ctr:.2f}%")
+
+        st.markdown("---")
+        st.subheader("🌐 매체별 성과 랭킹 TOP 3")
+
+        if '매체' in df.columns and '전환수' in df.columns:
+            media_agg = df.groupby('매체').agg({
+                '광고비': 'sum', '전환수': 'sum', '전환매출': 'sum', '클릭': 'sum', '노출': 'sum'
+            }).reset_index()
+
+            media_agg['CPA'] = np.where(media_agg['전환수'] > 0, media_agg['광고비'] / media_agg['전환수'], 0)
+            media_agg['CVR'] = np.where(media_agg['클릭'] > 0, (media_agg['전환수'] / media_agg['클릭']) * 100, 0)
+            media_agg['CTR'] = np.where(media_agg['노출'] > 0, (media_agg['클릭'] / media_agg['노출']) * 100, 0)
+            media_agg['ROAS'] = np.where(media_agg['광고비'] > 0, (media_agg['전환매출'] / media_agg['광고비']) * 100, 0)
+            media_agg['AOV'] = np.where(media_agg['전환수'] > 0, media_agg['전환매출'] / media_agg['전환수'], 0)
+            media_agg = media_agg.sort_values(by='전환수', ascending=False)
+
+            top3_cols = st.columns(3)
+            for i, (_, row) in enumerate(media_agg.head(3).iterrows()):
+                with top3_cols[i]:
+                    st.markdown(f"### 🥇 TOP {i+1}. {row['매체']}")
+                    st.write(f"• **전환수**: {row['전환수']:,.0f}건 | **예산**: {row['광고비']:,.0f}원")
+                    st.write(f"• **CPA**: {row['CPA']:,.0f}원 (평균 대비 {row['CPA']-avg_cpa:+,.0f}원)")
+                    st.write(f"• **CVR**: {row['CVR']:.2f}% | **ROAS**: {row['ROAS']:.1f}%")
+
+            st.markdown("---")
+            st.subheader("📈 종합 성과 시각화 리포트")
+
+            fig, axes = plt.subplots(2, 3, figsize=(18, 10))
+            sns.set_style("whitegrid")
+
+            # 1. 매체별 광고비 및 전환수
+            ax1 = axes[0, 0]
+            sns.barplot(data=media_agg, x='매체', y='광고비', color='#A0C4FF', alpha=0.8, ax=ax1)
+            ax2 = ax1.twinx()
+            sns.lineplot(data=media_agg, x='매체', y='전환수', color='#E63946', marker='o', linewidth=2.5, ax=ax2)
+            ax1.set_title('1. 매체별 광고비 & 전환수', fontsize=11, fontweight='bold')
+
+            # 2. 매체별 CPA 비교
+            ax_cpa = axes[0, 1]
+            sns.barplot(data=media_agg, x='매체', y='CPA', palette='Blues_r', ax=ax_cpa)
+            ax_cpa.axhline(avg_cpa, color='red', linestyle='--', label=f'평균 CPA ({avg_cpa:,.0f}원)')
+            ax_cpa.set_title('2. 매체별 평균 CPA (전환단가)', fontsize=11, fontweight='bold')
+            ax_cpa.legend(fontsize=9)
+
+            # 3. CVR & CTR
+            ax_cvr = axes[0, 2]
+            sns.barplot(data=media_agg, x='매체', y='CVR', color='#4EA8DE', alpha=0.7, ax=ax_cvr)
+            ax_ctr = ax_cvr.twinx()
+            sns.lineplot(data=media_agg, x='매체', y='CTR', color='#FFB703', marker='s', linewidth=2.5, ax=ax_ctr)
+            ax_cvr.set_title('3. 매체별 전환율(CVR) & 클릭률(CTR)', fontsize=11, fontweight='bold')
+
+            # 4. 캠페인/매체별 전환수 & ROAS 분포
+            campaign_col_name = [c for c in df.columns if '캠페인' in c and '목적' not in c]
+            ax_camp = axes[1, 0]
+            if '전환수' in df.columns and 'ROAS' in df.columns:
+                camp_agg_plot = df.groupby(['매체'] if '매체' in df.columns else campaign_col_name[0]).agg({'전환수':'sum', 'ROAS':'mean', '광고비':'sum'}).reset_index()
+                sns.scatterplot(data=camp_agg_plot, x='전환수', y='ROAS', size='광고비', sizes=(40, 400), hue='ROAS', palette='viridis', alpha=0.8, ax=ax_camp)
+                ax_camp.axhline(avg_roas, color='gray', linestyle=':', label=f'평균 ROAS({avg_roas:.0f}%)')
+                ax_camp.set_title('4. 매체/캠페인별 전환수 & ROAS 분포', fontsize=11, fontweight='bold')
+
+            # 5. 주요 상품/목적별 전환 비중
+            product_col = [c for c in df.columns if any(kw in c for kw in ['상품', '목적', '구분', '유형']) and '캠페인' not in c]
+            ax_pie = axes[1, 1]
+            if product_col and '전환수' in df.columns:
+                p_data = df.groupby(product_col[0])['전환수'].sum().nlargest(5)
+                ax_pie.pie(p_data, labels=p_data.index, autopct='%1.1f%%', startangle=140, colors=sns.color_palette("Set2"))
+                ax_pie.set_title(f'5. 주요 {product_col[0]}별 전환 비중', fontsize=11, fontweight='bold')
+
+            # 6. 클릭수 대비 전환수 산점도
+            ax_scat = axes[1, 2]
+            if '클릭' in df.columns and '전환수' in df.columns:
+                sns.scatterplot(data=df, x='클릭', y='전환수', hue='매체' if '매체' in df.columns else None, alpha=0.7, s=60, ax=ax_scat)
+                ax_scat.set_title('6. 클릭수 대비 전환수 효율 상관성', fontsize=11, fontweight='bold')
+
+            plt.tight_layout()
+            st.pyplot(fig)
+
+    # -------------------------------------------------------------------------
+    # TAB 1: 1단계 메인 KPI 영향 지표 평가
+    # -------------------------------------------------------------------------
     MAIN_KPI = '전환수'
     COST_METRICS = ['전환 단가(CPA)', 'CPC', 'CPM']
-    VOLUME_METRICS = ['노출', '클릭', '광고비']
-    RATIO_METRICS = ['CTR', '전환률', 'ROAS']
+    TARGET_EVAL_METRICS = ['노출', '클릭', '전환수', 'CTR', 'CPC', 'CPM', '전환률', '객단가']
+    eval_feature_cols = [c for c in TARGET_EVAL_METRICS if c in df.columns and c != MAIN_KPI]
 
-    # ==========================================
-    # 4. 분석 가능 여부 사전 검증
-    # ==========================================
-    if MAIN_KPI not in available_metrics or len(available_metrics) < 2:
-        st.error(f"⚠️ 데이터 부족: '{MAIN_KPI}' 또는 상관분석을 위한 수치형 지표 데이터가 부족합니다.")
-    else:
-        analysis_df = df.dropna(subset=[MAIN_KPI])
+    if len(eval_feature_cols) >= 2 and MAIN_KPI in df.columns:
+        analysis_df = df.dropna(subset=[MAIN_KPI]).copy()
+        X_df = analysis_df[eval_feature_cols].fillna(analysis_df[eval_feature_cols].mean())
+        y_df = analysis_df[MAIN_KPI]
 
-        if len(analysis_df) < 5:
-            st.warning("⚠️ 데이터 부족: 분석 및 예측 인사이트 도출을 위한 유효 데이터 행(Row) 수가 부족합니다.")
-        else:
-            st.divider()
+        spearman_scores = {}
+        for col in eval_feature_cols:
+            rho, _ = spearmanr(X_df[col], y_df)
+            if np.isnan(rho): rho = 0.0
+            if col in COST_METRICS and rho > 0: rho = -abs(rho)
+            spearman_scores[col] = abs(rho)
+
+        rf_model = RandomForestRegressor(n_estimators=100, random_state=42)
+        rf_model.fit(X_df, y_df)
+        rf_importances = dict(zip(eval_feature_cols, rf_model.feature_importances_))
+
+        ensemble_scores = {}
+        for col in eval_feature_cols:
+            ensemble_scores[col] = (spearman_scores[col] * 0.5) + (rf_importances[col] * 0.5)
+
+        sorted_ensemble = sorted(ensemble_scores.items(), key=lambda x: x[1], reverse=True)
+        top3_metrics = [item[0] for item in sorted_ensemble[:3]]
+
+        with tab1:
+            st.subheader("🎯 메인 KPI 영향 지표 평가 (상관분석 + RF 중요도 + 도메인 가드레일)")
             
-            # ==========================================
-            # 5. [PART 1] 피어슨 상관분석 및 히트맵
-            # ==========================================
-            st.header(f"📈 [PART 1] 상관분석: '{MAIN_KPI}'에 가장 영향도 높은 지표 선별")
-            
-            corr_matrix = analysis_df[available_metrics].corr(method='pearson')
+            t1_col1, t1_col2 = st.columns([1, 1])
+            with t1_col1:
+                st.markdown("### 📊 Top 3 핵심 영향 지표")
+                for rank, (m_name, score) in enumerate(sorted_ensemble[:3], 1):
+                    st.info(f"**{rank}위: {m_name}** (앙상블 점수: {score:.3f} | Spearman: {spearman_scores[m_name]:.2f}, RF: {rf_importances[m_name]:.2f})")
 
-            col1, col2 = st.columns([2, 1])
-            with col1:
-                fig, ax = plt.subplots(figsize=(10, 8))
-                sns.heatmap(corr_matrix, annot=True, fmt='.2f', cmap='coolwarm', vmin=-1, vmax=1, linewidths=0.5, ax=ax)
-                ax.set_title(f'전체 캠페인 지표 상관관계 히트맵 (KPI: {MAIN_KPI})', fontsize=14, pad=15)
-                st.pyplot(fig)
+            with t1_col2:
+                top_df = pd.DataFrame(sorted_ensemble, columns=['지표', '앙상블 점수'])
+                fig_top, ax_top = plt.subplots(figsize=(8, 4))
+                colors = ['#1D3557' if i < 3 else '#A8DADC' for i in range(len(top_df))]
+                sns.barplot(data=top_df, x='앙상블 점수', y='지표', palette=colors, ax=ax_top)
+                ax_top.set_title('메인 KPI 영향 지표 선별 결과 (TOP 3 강조)', fontsize=12, fontweight='bold')
+                st.pyplot(fig_top)
 
-            with col2:
-                exclude_cols = [MAIN_KPI, '전환매출', 'ROAS']
-                driver_cols = [c for c in available_metrics if c not in exclude_cols]
-                kpi_corr = corr_matrix[MAIN_KPI].drop(exclude_cols, errors='ignore').dropna().sort_values(ascending=False)
+        # -------------------------------------------------------------------------
+        # TAB 2: 2단계 TOP 3 지표 개선 시뮬레이션
+        # -------------------------------------------------------------------------
+        with tab2:
+            st.subheader("🔮 TOP 3 지표 10% 개선 시 시뮬레이션 (직관적 수치 변화 브리핑)")
+            st.write("지표가 10% 개선되었을 때 예상되는 순증가 전환 건수를 텍스트 형태로 산출합니다.")
 
-                top_positive = kpi_corr[kpi_corr > 0.2].head(2)
-                top_negative = kpi_corr[kpi_corr < -0.2].tail(2)
+            for metric in top3_metrics:
+                avg_val = X_df[metric].mean()
+                if avg_val <= 0: continue
 
-                st.info(f"**📌 '{MAIN_KPI}'에 가장 강력한 양(+)의 영향을 미치는 지표:**\n" + 
-                        (', '.join([f"{k} (r={v:.2f})" for k,v in top_positive.items()]) if not top_positive.empty else '없음'))
-                st.warning(f"**📌 '{MAIN_KPI}'에 가장 강력한 음(-)의 영향을 미치는 지표:**\n" + 
-                           (', '.join([f"{k} (r={v:.2f})" for k,v in top_negative.items()]) if not top_negative.empty else '없음'))
+                delta_sign = -1.0 if metric in COST_METRICS else 1.0
+                target_val = avg_val * (1 + delta_sign * 0.10)
 
-            st.divider()
+                is_ratio_metric = metric in ['CTR', '전환률']
+                if is_ratio_metric:
+                    display_multiplier = 100.0 if avg_val <= 1.0 else 1.0
+                    curr_disp = avg_val * display_multiplier
+                    target_disp = target_val * display_multiplier
+                    val_text = f"현재 {curr_disp:.2f}% → 10% 개선 시 {target_disp:.2f}%"
+                else:
+                    val_text = f"현재 {avg_val:,.2f} → 10% 개선 시 {target_val:,.2f}"
 
-            # ==========================================
-            # 6. [PART 2] 회귀분석 기반 성과 예측 시나리오
-            # ==========================================
-            st.header("🔮 [PART 2] 회귀분석 기반 성과 예측 시나리오 & 액션플랜")
-            
-            action_plans = {
-                'CTR': "소재 이미지/비디오 썸네일 교체, 후킹 헤드라인 A/B 테스트, Call-to-Action(CTA) 버튼 직관화",
-                'CPM': "타겟팅 범위 유연화, 게재위치 최적화, 머신러닝 학습을 위한 일예산 배분 조정",
-                '전환 단가(CPA)': "랜딩페이지 UX/UI 개선, 구매/신청 폼 간소화, 리타겟팅 오디언스 모수 활용",
-                'CPC': "품질지수 개선, 부정 키워드 제외 설정, 저효율 키워드/지면 입찰가 하향",
-                '노출': "광고 타겟 오디언스 확장, 핵심 지면 중심 머신러닝 노출 비중 확대",
-                '클릭': "검색광고 확장소재 추가, 고효율 광고 지면 입찰 비중 확대",
-                '전환률': "랜딩페이지 로딩 속도 개선, 상단 핵심 혜택 프로모션 강조"
-            }
+                X_log = np.log1p(X_df[[metric]])
+                log_rf = RandomForestRegressor(n_estimators=50, random_state=42)
+                log_rf.fit(X_log, y_df)
+                
+                pred_base_log = log_rf.predict(np.log1p([[avg_val]]))[0]
+                pred_target_log = log_rf.predict(np.log1p([[target_val]]))[0]
+                gain_log = max(0.0, pred_target_log - pred_base_log)
 
-            if not driver_cols or len(analysis_df) <= len(driver_cols) + 1:
-                st.warning("⚠️ 데이터 부족: 회귀분석 모델 생성을 위한 데이터 수 또는 지표가 부족합니다.")
-            else:
-                try:
-                    X = analysis_df[driver_cols].dropna()
-                    y = analysis_df.loc[X.index, MAIN_KPI]
+                X_cf_base = X_df.copy()
+                X_cf_target = X_df.copy()
+                X_cf_target[metric] = target_val
 
-                    X_const = sm.add_constant(X)
-                    model = sm.OLS(y, X_const).fit()
+                pred_base_rf = rf_model.predict(X_cf_base).mean()
+                pred_target_rf = rf_model.predict(X_cf_target).mean()
+                gain_rf = max(0.0, pred_target_rf - pred_base_rf)
 
-                    st.markdown(f"**📈 전체 모델 설명력 (R-squared):** `{model.rsquared*100:.1f}%`")
-                    
-                    params = model.params.drop('const', errors='ignore')
-                    analyzed_metrics = list(dict.fromkeys(list(top_positive.index) + list(top_negative.index)))
-                    
-                    for metric in analyzed_metrics:
-                        if metric in params:
-                            coef = params[metric]
-                            avg_val = X[metric].mean()
-                            delta_10 = avg_val * 0.10
-                            
-                            with st.expander(f"💡 [{metric}] 시뮬레이션 결과 보기", expanded=True):
-                                if metric in COST_METRICS:
-                                    if coef <= 0:
-                                        expected_gain = abs(coef * delta_10)
-                                        st.markdown(f"- 비용 단가를 현재 평균({avg_val:,.2f}원)에서 **10% 절감(-{delta_10:,.2f}원)**할 경우:")
-                                        st.markdown(f"  - 👉 '{MAIN_KPI}'는 약 **+{expected_gain:.2f}개 증가**할 것으로 기대됩니다.")
-                                        st.markdown(f"  - 🛠️ **추천 액션플랜:** {action_plans.get(metric, '단가 최적화 진행')}")
-                                    else:
-                                        st.error(f"⚠️ [논리 검증 경고: 단가 체증/프리미엄 지면 쏠림]\n- 현재 {metric}(평균 {avg_val:,.2f}원)가 높을수록 전환수가 높게 나타납니다.\n- [원인 진단] 고단가 프리미엄 지면에 전환이 집중되어 발생하는 착시일 수 있습니다.\n- 🛠️ **추천 액션플랜:** 고단가 지면의 실제 ROI 정밀 검증 필요")
-                                else:
-                                    if coef >= 0:
-                                        expected_gain = coef * delta_10
-                                        st.markdown(f"- 효율을 현재 평균({avg_val:,.2f})에서 **10% 개선(+{delta_10:,.2f})**할 경우:")
-                                        st.markdown(f"  - 👉 '{MAIN_KPI}'는 약 **+{expected_gain:.2f}개 증가**할 것으로 기대됩니다.")
-                                        st.markdown(f"  - 🛠️ **추천 액션플랜:** {action_plans.get(metric, '효율 개선 진행')}")
-                                    else:
-                                        st.error(f"⚠️ [논리 검증 경고: 비효율/노출 낭비 구간 포착]\n- 현재 {metric}(평균 {avg_val:,.2f}) 수치가 높음에도 전환으로 이어지지 않고 있습니다.\n- 🛠️ **추천 액션플랜:** 타겟 오디언스 정밀화 및 저효율 지면 차단")
+                blended_gain = (gain_log + gain_rf) / 2.0
+                action_type = "10% 절감" if metric in COST_METRICS else "10% 개선"
 
-                except Exception as e:
-                    st.error(f"⚠️ 예측 시뮬레이션 생성 실패: ({e})")
+                st.success(f"📌 **[{metric}] {action_type}** ({val_text})\n\n👉 **기대 전환 추가 증가량:** 약 **+{blended_gain:.1f}건** 순증가")
 
-            st.divider()
+        # -------------------------------------------------------------------------
+        # TAB 3&4: 예산 재배치(감액 & 증액) 시뮬레이션
+        # 🛠️ 보완: 단일 '캠페인 구분' 데이터 대응 자동 키 조합
+        # -------------------------------------------------------------------------
+        with tab34:
+            st.subheader("⚖️ 예산 재배치 감액 & 증액 시뮬레이션 (1안 vs 2안 시나리오)")
 
-            # ==========================================
-            # 7. [PART 3] 매체/소재별 세부 분석
-            # ==========================================
-            st.header("🔍 [PART 3] 매체/소재별 핵심 동인 세부 분석 (Top 3)")
-            
-            def run_group_analysis(dataframe, group_col):
-                if group_col in dataframe.columns and dataframe[group_col].dropna().nunique() > 0:
-                    st.subheader(f"📍 [{group_col}별] 분석")
-                    groups = dataframe[group_col].dropna().unique()
-                    
-                    tabs = st.tabs([str(g) for g in groups])
-                    for i, group in enumerate(groups):
-                        with tabs[i]:
-                            sub_df = dataframe[dataframe[group_col] == group]
-                            valid_sub_metrics = [c for c in available_metrics if sub_df[c].dropna().nunique() > 1]
-
-                            if len(sub_df) < 3 or MAIN_KPI not in valid_sub_metrics:
-                                st.warning(f"⚠️ 데이터 부족 (3행 미만)")
-                                continue
-
-                            sub_corr = sub_df[valid_sub_metrics].corr(method='pearson')
-                            if MAIN_KPI in sub_corr.index:
-                                kpi_corr_sub = sub_corr[MAIN_KPI].drop(exclude_cols, errors='ignore').dropna()
-                                kpi_corr_sorted = kpi_corr_sub.reindex(kpi_corr_sub.abs().sort_values(ascending=False).index)
-                                top_3 = kpi_corr_sorted.head(3)
-
-                                st.write(f"**(유효 데이터 {len(sub_df)}행)**")
-                                if not top_3.empty:
-                                    rank_emojis = ['🥇 1위', '🥈 2위', '🥉 3위']
-                                    for idx, (metric_name, corr_val) in enumerate(top_3.items()):
-                                        emoji = rank_emojis[idx] if idx < len(rank_emojis) else f"{idx+1}위"
-                                        sign_str = "양(+)" if corr_val > 0 else "음(-)"
-                                        st.markdown(f"- {emoji} **영향 지표:** `{metric_name}` | 상관계수 r = **{corr_val:+.2f}** ({sign_str}의 영향)")
-                                else:
-                                    st.write("⚠️ 유의미한 영향 지표를 찾을 수 없습니다.")
-
-            run_group_analysis(analysis_df, '매체')
-            run_group_analysis(analysis_df, '소재명')
-
-            st.divider()
-
-            # ==========================================
-            # 8. [PART 4] 양방향(증액/감액) Hill S-Curve 시뮬레이션
-            # ==========================================
-            st.header("💰 [PART 4] 양방향 S-Curve & 한계 효율 시뮬레이션")
-            st.markdown("*(적용 알고리즘: 한계 손실 최소화 감액 + 한계 CPA 임계점 증액 + 5% 이하 필터)*")
-
-            campaign_col = [c for c in df.columns if '캠페인' in c and '목적' not in c][0] if any('캠페인' in c and '목적' not in c for c in df.columns) else None
+            campaign_col = campaign_col_name[0] if campaign_col_name else None
             objective_col = [c for c in df.columns if '목적' in c or 'objective' in c.lower()][0] if any('목적' in c or 'objective' in c.lower() for c in df.columns) else None
             media_col = '매체' if '매체' in df.columns else None
             budget_col = '광고비' if '광고비' in df.columns else None
             kpi_col = '전환수' if '전환수' in df.columns else None
-            click_col = '클릭' if '클릭' in df.columns else None
 
-            if campaign_col and budget_col:
-                # 데이터 집계 및 파라미터 세팅
-                agg_dict = {budget_col: 'sum'}
-                if kpi_col: agg_dict[kpi_col] = 'sum'
-                if click_col: agg_dict[click_col] = 'sum'
+            if budget_col and kpi_col:
+                # 그룹핑 키 자동 설정 (단일 캠페인 구분 대응)
+                group_keys = []
+                if campaign_col: group_keys.append(campaign_col)
+                if media_col and (not campaign_col or df[campaign_col].nunique() <= 1):
+                    group_keys.append(media_col)
+                if objective_col and objective_col not in group_keys:
+                    group_keys.append(objective_col)
 
-                for m_col in template_metric_cols:
-                    if m_col in df.columns and m_col not in [budget_col, kpi_col, click_col]:
-                        agg_dict[m_col] = 'mean'
+                camp_summary = df.groupby(group_keys, as_index=False).agg({budget_col: 'sum', kpi_col: 'sum'})
+                camp_summary['캠페인명'] = camp_summary[group_keys].astype(str).agg(' - '.join, axis=1)
+                camp_summary['CPA'] = np.where(camp_summary[kpi_col] > 0, camp_summary[budget_col] / camp_summary[kpi_col], np.nan)
 
-                group_keys = [campaign_col]
-                if objective_col: group_keys.append(objective_col)
-                if media_col: group_keys.append(media_col)
+                tot_b_sum = camp_summary[budget_col].sum()
+                tot_c_sum = camp_summary[kpi_col].sum()
+                target_cpa = tot_b_sum / tot_c_sum if tot_c_sum > 0 else np.nan
 
-                camp_summary = df.groupby(group_keys, as_index=False).agg(agg_dict)
-                camp_summary['CPA'] = np.where(camp_summary[kpi_col] > 0, camp_summary[budget_col] / camp_summary[kpi_col], np.nan) if kpi_col else np.nan
-                camp_summary['CPC'] = np.where(camp_summary[click_col] > 0, camp_summary[budget_col] / camp_summary[click_col], np.nan) if click_col else np.nan
-
-                total_budget = camp_summary[budget_col].sum()
-                total_conv = camp_summary[kpi_col].sum() if kpi_col else 0
-                avg_account_cpa = total_budget / total_conv if total_conv > 0 else np.nan
-                target_cpa = avg_account_cpa if pd.notnull(avg_account_cpa) else np.inf
-
-                def is_brand_search(name):
-                    name_lower = str(name).lower().replace(" ", "")
-                    return any(kw in name_lower for kw in ['브랜드검색', '브검', 'brandsearch', 'bs'])
-
-                camp_summary['is_fixed'] = camp_summary[campaign_col].apply(is_brand_search)
+                camp_summary['is_fixed'] = camp_summary['캠페인명'].apply(
+                    lambda x: any(kw in str(x).lower().replace(" ", "") for kw in ['브랜드검색', '브검', 'brandsearch', 'bs'])
+                )
                 flexible_camps = camp_summary[camp_summary['is_fixed'] == False].copy()
-
-                obj_types = []
-                for idx, row in flexible_camps.iterrows():
-                    o_val = str(row[objective_col]).strip() if objective_col and pd.notnull(row[objective_col]) else "전환"
-                    if "트래픽" in o_val or "traffic" in o_val.lower() or "유입" in o_val:
-                        obj_types.append("트래픽")
-                    else:
-                        obj_types.append("전환")
-                flexible_camps['obj_type'] = obj_types
 
                 def hill_s_curve(x_budget, max_conv, k_param, n_param=1.5):
                     if x_budget <= 0: return 0.0
                     return max_conv * (x_budget**n_param) / ((x_budget**n_param) + (k_param**n_param))
 
-                # 시뮬레이션 결과 저장용 리스트
-                cut_results_txt = []
-                add_results_txt = []
+                # 감액 계산
+                cut_amounts_1, conv_losses_1 = [], []
+                cut_amounts_2, conv_losses_2 = [], []
 
-                # (1) 감액 시뮬레이션
-                sim_cut_amounts = []
-                sim_conv_losses = []
                 for idx, row in flexible_camps.iterrows():
-                    cur_budget, cur_conv, cur_cpa = row[budget_col], (row[kpi_col] if kpi_col else 0), row['CPA']
-                    is_inefficient = (row['obj_type'] == '전환' and (pd.isna(cur_cpa) or cur_cpa > target_cpa)) or \
-                                     (row['obj_type'] == '트래픽' and row['CPC'] > flexible_camps['CPC'].mean())
+                    cur_budget = row[budget_col]
+                    cur_conv = row[kpi_col]
+                    cur_cpa = row['CPA']
 
-                    if not is_inefficient or cur_budget <= 0:
-                        sim_cut_amounts.append(0.0); sim_conv_losses.append(0.0)
+                    if pd.isna(cur_cpa) or cur_cpa <= target_cpa or cur_budget <= 0 or cur_conv < 1.0:
+                        cut_amounts_1.append(0.0); conv_losses_1.append(0.0)
+                        cut_amounts_2.append(0.0); conv_losses_2.append(0.0)
                         continue
 
-                    max_conv_est = max(cur_conv * 2.0, 1.0)
+                    max_conv_est = cur_conv * 2.0
                     k_est = cur_budget * (max(0.01, (max_conv_est / max(cur_conv, 0.1) - 1)) ** (1 / 1.5))
-                    max_cut_limit, step_size = cur_budget * 0.40, max(10000, (cur_budget * 0.40) / 20)
+                    s_curve_limit_cut = cur_budget * 0.40
+                    step_size = max(10000, cur_budget * 0.02)
                     sim_cut = 0.0
-                    stop_reason = "최대 안전 감액 한도(40%) 도달"
 
-                    while sim_cut + step_size <= max_cut_limit:
+                    while sim_cut + step_size <= s_curve_limit_cut:
                         test_cut = sim_cut + step_size
-                        delta_loss = max(0.0, hill_s_curve(cur_budget - sim_cut, max_conv_est, k_est) - hill_s_curve(cur_budget - test_cut, max_conv_est, k_est))
-                        marginal_loss_cpa = step_size / delta_loss if delta_loss > 0 else np.inf
-                        if marginal_loss_cpa < target_cpa * 0.8:
-                            stop_reason = f"전환 손실 급증 임계점 (한계 손실단가: {marginal_loss_cpa:,.0f}원)"
-                            break
+                        conv_prev = hill_s_curve(cur_budget - sim_cut, max_conv_est, k_est)
+                        conv_next = hill_s_curve(cur_budget - test_cut, max_conv_est, k_est)
+                        delta_loss = max(0.0, conv_prev - conv_next)
+                        mcpa_loss = step_size / delta_loss if delta_loss > 0 else np.inf
+
+                        if mcpa_loss < target_cpa * 0.8: break
                         sim_cut += step_size
 
-                    if (sim_cut / cur_budget) <= 0.05:
-                        sim_cut, conv_loss = 0.0, 0.0
-                    else:
-                        conv_loss = max(0.0, cur_conv - hill_s_curve(cur_budget - sim_cut, max_conv_est, k_est))
+                    c1 = 0.0 if (sim_cut / cur_budget) <= 0.05 else sim_cut
+                    l1 = max(0.0, cur_conv - hill_s_curve(cur_budget - c1, max_conv_est, k_est)) if c1 > 0 else 0.0
 
-                    sim_cut_amounts.append(sim_cut)
-                    sim_conv_losses.append(conv_loss)
+                    c2 = c1 * 0.5
+                    l2 = max(0.0, cur_conv - hill_s_curve(cur_budget - c2, max_conv_est, k_est)) if c2 > 0 else 0.0
 
-                    if sim_cut > 0:
-                        cut_pct = (sim_cut / cur_budget) * 100
-                        cpa_str = f"CPA: {cur_cpa:,.0f}원" if pd.notnull(cur_cpa) else "전환 0건"
-                        cut_results_txt.append(f"**[{row[campaign_col]}]** ({cpa_str})\n- 추천 감액(-{cut_pct:.1f}%): **-{sim_cut:,.0f}원**\n- 예상 손실: **약 -{conv_loss:.1f}건**\n- 로직: {stop_reason}")
+                    cut_amounts_1.append(c1); conv_losses_1.append(l1)
+                    cut_amounts_2.append(c2); conv_losses_2.append(l2)
 
-                flexible_camps['cut_amount'] = sim_cut_amounts
-                flexible_camps['conv_loss'] = sim_conv_losses
-                total_saved_budget = flexible_camps['cut_amount'].sum()
-                total_conv_loss = flexible_camps['conv_loss'].sum()
+                flexible_camps['cut_1'] = cut_amounts_1
+                flexible_camps['loss_1'] = conv_losses_1
+                flexible_camps['cut_2'] = cut_amounts_2
+                flexible_camps['loss_2'] = conv_losses_2
 
-                # (2) 증액 시뮬레이션
-                conv_scale_camps = flexible_camps[(flexible_camps['obj_type'] == '전환') & (flexible_camps['cut_amount'] == 0.0)].copy()
-                traffic_scale_camps = flexible_camps[(flexible_camps['obj_type'] == '트래픽') & (flexible_camps['cut_amount'] == 0.0)].copy()
+                total_saved_1, total_loss_1 = flexible_camps['cut_1'].sum(), flexible_camps['loss_1'].sum()
+                total_saved_2, total_loss_2 = flexible_camps['cut_2'].sum(), flexible_camps['loss_2'].sum()
 
-                conv_pool = total_saved_budget * 0.80 if not conv_scale_camps.empty else 0
-                traffic_pool = total_saved_budget * 0.20 if not traffic_scale_camps.empty else (total_saved_budget - conv_pool)
+                # 증액 계산
+                scale_camps = flexible_camps[(flexible_camps['cut_1'] == 0.0) & (flexible_camps['CPA'] <= target_cpa)].copy()
 
-                total_expected_add_conv, total_expected_add_clicks, valid_inc_count = 0, 0, 0
+                def run_scale_simulation(saved_budget, scale_df):
+                    if scale_df.empty or saved_budget <= 0: return 0.0, {}
+                    n_camps = len(scale_df)
+                    def objective_func(weights):
+                        est_returns = np.sum(weights * (1 / scale_df['CPA'].fillna(target_cpa)))
+                        risk = np.sqrt(np.sum((weights ** 2) * (scale_df['CPA'].fillna(target_cpa) ** 2)))
+                        return -(est_returns / (risk + 1e-5))
 
-                if not conv_scale_camps.empty and conv_pool > 0:
-                    conv_scale_camps['score'] = 1 / conv_scale_camps['CPA']
-                    conv_scale_camps['weight'] = conv_scale_camps['score'] / conv_scale_camps['score'].sum()
-                    for _, row in conv_scale_camps.iterrows():
-                        max_alloc, cur_budget, cur_conv, cur_cpa = conv_pool * row['weight'], row[budget_col], row[kpi_col], row['CPA']
-                        max_conv_est = cur_conv * 2.2
+                    max_weight_cap = 0.50 if n_camps > 1 else 1.0
+                    bounds = tuple((0.0, max_weight_cap) for _ in range(n_camps))
+                    constraints = ({'type': 'eq', 'fun': lambda w: np.sum(w) - 1.0})
+                    init_w = np.array([1.0 / n_camps] * n_camps)
+
+                    opt_res = minimize(objective_func, init_w, method='SLSQP', bounds=bounds, constraints=constraints)
+                    opt_weights = opt_res.x if opt_res.success else init_w
+
+                    total_add_conv, details = 0.0, {}
+                    idx_counter = 0
+
+                    for _, row in scale_df.iterrows():
+                        alloc_budget = saved_budget * opt_weights[idx_counter]
+                        idx_counter += 1
+
+                        cur_budget = row[budget_col]
+                        cur_conv = row[kpi_col]
+                        
+                        max_conv_est = cur_conv * 2.0
                         k_est = cur_budget * ((max_conv_est / max(cur_conv, 0.1) - 1) ** (1 / 1.5))
-                        step_size, sim_add_budget = max(10000, max_alloc / 20), 0.0
-                        mCPA_threshold = target_cpa * 1.3 if pd.notnull(target_cpa) else cur_cpa * 1.5
-                        stop_reason = "할당 예산 소진"
 
-                        while sim_add_budget + step_size <= max_alloc:
-                            delta_conv = hill_s_curve(cur_budget + sim_add_budget + step_size, max_conv_est, k_est) - hill_s_curve(cur_budget + sim_add_budget, max_conv_est, k_est)
-                            marginal_cpa = step_size / delta_conv if delta_conv > 0 else np.inf
-                            if marginal_cpa > mCPA_threshold:
-                                stop_reason = f"한계 CPA 임계점 (mCPA: {marginal_cpa:,.0f}원)"
-                                break
+                        step_size = max(10000, alloc_budget / 20)
+                        sim_add_budget = 0.0
+                        mcpa_threshold = target_cpa * 1.3
+
+                        while sim_add_budget + step_size <= alloc_budget:
+                            next_b = cur_budget + sim_add_budget + step_size
+                            prev_b = cur_budget + sim_add_budget
+                            
+                            delta_c = hill_s_curve(next_b, max_conv_est, k_est) - hill_s_curve(prev_b, max_conv_est, k_est)
+                            marginal_cpa = step_size / delta_c if delta_c > 0 else np.inf
+
+                            if marginal_cpa > mcpa_threshold: break
                             sim_add_budget += step_size
 
-                        if (sim_add_budget / cur_budget) > 0.05:
-                            valid_inc_count += 1
-                            add_conv = max(0.0, hill_s_curve(cur_budget + sim_add_budget, max_conv_est, k_est) - cur_conv)
-                            total_expected_add_conv += add_conv
-                            inc_pct = (sim_add_budget / cur_budget) * 100
-                            add_results_txt.append(f"**[{row[campaign_col]}]** (현재 CPA: {cur_cpa:,.0f}원)\n- 추천 증액(+{inc_pct:.1f}%): **+{sim_add_budget:,.0f}원**\n- 예상 증가: **약 +{add_conv:.1f}건**\n- 로직: {stop_reason}")
+                        if (sim_add_budget / cur_budget) <= 0.05: continue
 
-                if not traffic_scale_camps.empty and traffic_pool > 0:
-                    traffic_scale_camps['score'] = 1 / traffic_scale_camps['CPC']
-                    traffic_scale_camps['weight'] = traffic_scale_camps['score'] / traffic_scale_camps['score'].sum()
-                    for _, row in traffic_scale_camps.iterrows():
-                        alloc_budget, cur_budget = traffic_pool * row['weight'], row[budget_col]
-                        if (alloc_budget / cur_budget) > 0.05:
-                            valid_inc_count += 1
-                            add_clicks = alloc_budget / row['CPC'] if pd.notnull(row['CPC']) else 0
-                            total_expected_add_clicks += add_clicks
-                            inc_pct = (alloc_budget / cur_budget) * 100
-                            add_results_txt.append(f"**[{row[campaign_col]}]** (목적: 트래픽)\n- 추천 증액(+{inc_pct:.1f}%): **+{alloc_budget:,.0f}원**\n- 예상 클릭: **약 +{add_clicks:,.1f}개**")
+                        add_conv = max(0.0, hill_s_curve(cur_budget + sim_add_budget, max_conv_est, k_est) - cur_conv)
+                        total_add_conv += add_conv
+                        details[row['캠페인명']] = (sim_add_budget, add_conv)
 
-                # 결과 출력 UI 구성
-                net_conv_gain = total_expected_add_conv - total_conv_loss
+                    return total_add_conv, details
 
-                st.subheader("🎯 최종 시너지 효과 (Net Gain Report)")
-                m_col1, m_col2, m_col3 = st.columns(3)
-                m_col1.metric("절감된 낭비 예산", f"{total_saved_budget:,.0f}원", f"손실: -{total_conv_loss:.1f}건", delta_color="inverse")
-                m_col2.metric("확보 예산 재투입 (증가)", f"{total_saved_budget:,.0f}원", f"추가: +{total_expected_add_conv:.1f}건", delta_color="normal")
-                m_col3.metric("최종 전환 순증가(Net Gain)", f"+{net_conv_gain:+.1f}건", "동일 예산 기준 성과", delta_color="normal")
+                add_conv_1, details_1 = run_scale_simulation(total_saved_1, scale_camps)
+                add_conv_2, details_2 = run_scale_simulation(total_saved_2, scale_camps)
+
+                net_gain_1 = add_conv_1 - total_loss_1
+                net_gain_2 = add_conv_2 - total_loss_2
+
+                # -------------------------------------------------------------
+                # 텍스트 브리핑 및 리포트 표시
+                # -------------------------------------------------------------
+                st.markdown("### 📉 3단계. 저효율 캠페인 감액 시뮬레이션")
+                has_cuts = False
+                for _, row in flexible_camps[flexible_camps['cut_1'] > 0].iterrows():
+                    has_cuts = True
+                    cur_budget = row[budget_col]
+                    c1, l1 = row['cut_1'], row['loss_1']
+                    c2, l2 = row['cut_2'], row['loss_2']
+                    pct1 = (c1 / cur_budget) * 100
+                    pct2 = (c2 / cur_budget) * 100
+
+                    with st.expander(f"📌 캠페인: [{row['캠페인명']}] (기존 예산: {cur_budget:,.0f}원 | CPA: {row['CPA']:,.0f}원)"):
+                        st.write(f"• **1안(원안)** : 기존 {cur_budget:,.0f}원 ➔ **조정 {cur_budget-c1:,.0f}원** (`-{c1:,.0f}원`, -{pct1:.1f}%) | 예상 손실: `-{l1:.1f}건`")
+                        st.write(f"• **2안(50%)** : 기존 {cur_budget:,.0f}원 ➔ **조정 {cur_budget-c2:,.0f}원** (`-{c2:,.0f}원`, -{pct2:.1f}%) | 예상 손실: `-{l2:.1f}건`")
+
+                if not has_cuts:
+                    st.info("💡 감액 추천 대상 캠페인이 없습니다. (모든 캠페인의 CPA가 평균 이하이거나 정상 범위입니다)")
+
+                st.markdown("---")
+                st.markdown("### 📈 4단계. 고효율 캠페인 증액 시뮬레이션")
                 
-                if total_expected_add_clicks > 0:
-                    st.info(f"💡 **[보조 유입]** 추가 트래픽(클릭): 약 **+{total_expected_add_clicks:,.1f}개** 순증가 예상")
+                col_sc1, col_sc2 = st.columns(2)
+                with col_sc1:
+                    st.markdown("#### [ 1안 감액 연동 증액 추천 ]")
+                    for camp_name, (add_b, add_c) in details_1.items():
+                        orig_b = scale_camps[scale_camps['캠페인명'] == camp_name][budget_col].values[0]
+                        st.write(f"• **{camp_name}**\n  - 기존 {orig_b:,.0f}원 ➔ **조정 {orig_b+add_b:,.0f}원** (`+{add_b:,.0f}원`)\n  - 기대 추가 전환: `+{add_c:.1f}건`")
 
-                with st.expander("세부 캠페인별 시뮬레이션 결과(감액/증액) 보기"):
-                    c1, c2 = st.columns(2)
-                    with c1:
-                        st.markdown("### 📉 감액 대상 캠페인")
-                        if cut_results_txt:
-                            for txt in cut_results_txt:
-                                st.markdown(txt)
-                                st.write("---")
-                        else:
-                            st.write("감액 대상 캠페인이 없습니다.")
-                    with c2:
-                        st.markdown("### 📈 증액 대상 캠페인")
-                        if add_results_txt:
-                            for txt in add_results_txt:
-                                st.markdown(txt)
-                                st.write("---")
-                        else:
-                            st.write("증액 대상 캠페인이 없습니다.")
-            else:
-                st.error("⚠️ 필수 컬럼 미인식: '캠페인' 또는 '광고비' 컬럼을 엑셀에서 확인해주세요.")
+                with col_sc2:
+                    st.markdown("#### [ 2안(50%) 감액 연동 증액 추천 ]")
+                    for camp_name, (add_b, add_c) in details_2.items():
+                        orig_b = scale_camps[scale_camps['캠페인명'] == camp_name][budget_col].values[0]
+                        st.write(f"• **{camp_name}**\n  - 기존 {orig_b:,.0f}원 ➔ **조정 {orig_b+add_b:,.0f}원** (`+{add_b:,.0f}원`)\n  - 기대 추가 전환: `+{add_c:.1f}건`")
+
+                st.markdown("---")
+                st.markdown("### 📋 최종 시뮬레이션 비교 리포트")
+                
+                rep_col1, rep_col2 = st.columns(2)
+                with rep_col1:
+                    st.info(f"""
+                    **📊 [1안: 원안 제안 (적극적 예산 재배치)]**
+                    - 감액 절감 예산 총액 : `-{total_saved_1:,.0f}원`
+                    - 감액에 따른 전환 손실: `-{total_loss_1:.1f}건`
+                    - 고효율 캠페인 재투입 : `+{total_saved_1:,.0f}원` (추가 전환: `+{add_conv_1:.1f}건`)
+                    
+                    🎯 **최종 전환 순증가 (Net Gain): 약 +{net_gain_1:+.1f}건**
+                    """)
+
+                with rep_col2:
+                    st.success(f"""
+                    **📊 [2안: 50% 보수적 제안 (리스크 관리형 재배치)]**
+                    - 감액 절감 예산 총액 : `-{total_saved_2:,.0f}원`
+                    - 감액에 따른 전환 손실: `-{total_loss_2:.1f}건`
+                    - 고효율 캠페인 재투입 : `+{total_saved_2:,.0f}원` (추가 전환: `+{add_conv_2:.1f}건`)
+                    
+                    🎯 **최종 전환 순증가 (Net Gain): 약 +{net_gain_2:+.1f}건**
+                    """)
+
+else:
+    st.info("👈 좌측 사이드바에서 분석할 마케팅 성과 엑셀(.xlsx) 파일을 업로드해주세요.")
