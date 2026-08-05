@@ -11,17 +11,19 @@ from scipy.optimize import minimize
 from sklearn.ensemble import RandomForestRegressor
 import streamlit as st
 
-# 경고 무시 및 Matplotlib 로깅 차단
 warnings.filterwarnings('ignore')
 
-# -----------------------------------------------------------------------------
-# Font & Style Setup (Matplotlib 캐시 강제 재설정 및 웹폰트 완벽 주입)
-# -----------------------------------------------------------------------------
+st.set_page_config(
+    page_title="디지털 마케팅 캠페인 성과 분석 & 예산 재배치 시뮬레이터",
+    page_icon="📊",
+    layout="wide"
+)
+
+# 폰트 다운로드 및 적용 함수
 def set_korean_font():
     font_filename = "NanumGothic.ttf"
     font_url = "https://github.com/google/fonts/raw/main/ofl/nanumgothic/NanumGothic-Regular.ttf"
     
-    # 폰트 다운로드
     if not os.path.exists(font_filename):
         try:
             urllib.request.urlretrieve(font_url, font_filename)
@@ -29,30 +31,19 @@ def set_korean_font():
             st.error(f"폰트 다운로드 실패: {e}")
             
     if os.path.exists(font_filename):
-        # Matplotlib 폰트 매니저 강제 캐시 갱신
         fm.fontManager.addfont(font_filename)
         prop = fm.FontProperties(fname=font_filename)
         font_name = prop.get_name()
         
-        # 전역 폰트 설정
         plt.rcParams['font.family'] = font_name
         plt.rcParams['font.sans-serif'] = [font_name]
         plt.rc('font', family=font_name)
     
-    plt.rcParams['axes.unicode_minus'] = False # 마이너스 기호 깨짐 방지
+    plt.rcParams['axes.unicode_minus'] = False
 
-# 차트 생성 시마다 폰트를 강제 재설정하도록 호출
-set_korean_font()
-
-# -----------------------------------------------------------------------------
-# Title & Description
-# -----------------------------------------------------------------------------
 st.title("📊 마케팅 캠페인 성과 분석 & 예산 재배치 시뮬레이터")
 st.markdown("---")
 
-# -----------------------------------------------------------------------------
-# File Upload
-# -----------------------------------------------------------------------------
 st.sidebar.header("📁 데이터 업로드")
 uploaded_file = st.sidebar.file_uploader("성과 데이터 엑셀(.xlsx) 파일 업로드", type=["xlsx", "xls"])
 
@@ -60,13 +51,11 @@ if uploaded_file is not None:
     df = pd.read_excel(uploaded_file)
     df.columns = df.columns.astype(str).str.strip()
 
-    # 필수 수치 데이터 변환
     num_cols = ['광고비', '노출', '클릭', '전환수', '전환매출', 'CTR', 'CPC', 'CPM', '전환률', '전환 단가(CPA)', 'ROAS', '객단가']
     for col in num_cols:
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
 
-    # 파생 변수 보완 계산
     if 'CTR' not in df.columns and '노출' in df.columns and '클릭' in df.columns:
         df['CTR'] = np.where(df['노출'] > 0, (df['클릭'] / df['노출']) * 100, 0)
     if '전환률' not in df.columns and '클릭' in df.columns and '전환수' in df.columns:
@@ -74,7 +63,6 @@ if uploaded_file is not None:
     if 'ROAS' not in df.columns and '광고비' in df.columns and '전환매출' in df.columns:
         df['ROAS'] = np.where(df['광고비'] > 0, (df['전환매출'] / df['광고비']) * 100, 0)
 
-    # 전체 통계 집계
     tot_b = df['광고비'].sum() if '광고비' in df.columns else 0
     tot_c = df['전환수'].sum() if '전환수' in df.columns else 0
     tot_s = df['전환매출'].sum() if '전환매출' in df.columns else 0
@@ -89,9 +77,6 @@ if uploaded_file is not None:
     avg_cpm = (tot_b / tot_imp * 1000) if tot_imp > 0 else 0
     avg_aov = tot_s / tot_c if tot_c > 0 else 0
 
-    # -------------------------------------------------------------------------
-    # TAB 구성
-    # -------------------------------------------------------------------------
     tab0, tab1, tab2, tab34 = st.tabs([
         "📊 0단계. 종합 대시보드",
         "🎯 1단계. TOP 3 지표 선별",
@@ -102,7 +87,6 @@ if uploaded_file is not None:
     with tab0:
         st.subheader("🌐 전체 캠페인 성과 종합 요약 (Executive Dashboard)")
         
-        # Key Metrics Cards
         m_col1, m_col2, m_col3, m_col4 = st.columns(4)
         m_col1.metric("총 집행 광고비", f"{tot_b:,.0f} 원")
         m_col2.metric("총 전환수", f"{tot_c:,.0f} 건")
@@ -141,31 +125,30 @@ if uploaded_file is not None:
             st.markdown("---")
             st.subheader("📈 종합 성과 시각화 리포트")
 
+            # 💡 차트 생성 직전 폰트 강제 주입
+            set_korean_font()
+
             fig, axes = plt.subplots(2, 3, figsize=(18, 10))
             sns.set_style("whitegrid")
 
-            # 1. 매체별 광고비 및 전환수
             ax1 = axes[0, 0]
             sns.barplot(data=media_agg, x='매체', y='광고비', color='#A0C4FF', alpha=0.8, ax=ax1)
             ax2 = ax1.twinx()
             sns.lineplot(data=media_agg, x='매체', y='전환수', color='#E63946', marker='o', linewidth=2.5, ax=ax2)
             ax1.set_title('1. 매체별 광고비 & 전환수', fontsize=11, fontweight='bold')
 
-            # 2. 매체별 CPA 비교
             ax_cpa = axes[0, 1]
             sns.barplot(data=media_agg, x='매체', y='CPA', palette='Blues_r', ax=ax_cpa)
             ax_cpa.axhline(avg_cpa, color='red', linestyle='--', label=f'평균 CPA ({avg_cpa:,.0f}원)')
             ax_cpa.set_title('2. 매체별 평균 CPA (전환단가)', fontsize=11, fontweight='bold')
             ax_cpa.legend(fontsize=9)
 
-            # 3. CVR & CTR
             ax_cvr = axes[0, 2]
             sns.barplot(data=media_agg, x='매체', y='CVR', color='#4EA8DE', alpha=0.7, ax=ax_cvr)
             ax_ctr = ax_cvr.twinx()
             sns.lineplot(data=media_agg, x='매체', y='CTR', color='#FFB703', marker='s', linewidth=2.5, ax=ax_ctr)
             ax_cvr.set_title('3. 매체별 전환율(CVR) & 클릭률(CTR)', fontsize=11, fontweight='bold')
 
-            # 4. 캠페인/매체별 전환수 & ROAS 분포
             campaign_col_name = [c for c in df.columns if '캠페인' in c and '목적' not in c]
             ax_camp = axes[1, 0]
             if '전환수' in df.columns and 'ROAS' in df.columns:
@@ -174,7 +157,6 @@ if uploaded_file is not None:
                 ax_camp.axhline(avg_roas, color='gray', linestyle=':', label=f'평균 ROAS({avg_roas:.0f}%)')
                 ax_camp.set_title('4. 매체/캠페인별 전환수 & ROAS 분포', fontsize=11, fontweight='bold')
 
-            # 5. 주요 상품/목적별 전환 비중
             product_col = [c for c in df.columns if any(kw in c for kw in ['상품', '목적', '구분', '유형']) and '캠페인' not in c]
             ax_pie = axes[1, 1]
             if product_col and '전환수' in df.columns:
@@ -182,7 +164,6 @@ if uploaded_file is not None:
                 ax_pie.pie(p_data, labels=p_data.index, autopct='%1.1f%%', startangle=140, colors=sns.color_palette("Set2"))
                 ax_pie.set_title(f'5. 주요 {product_col[0]}별 전환 비중', fontsize=11, fontweight='bold')
 
-            # 6. 클릭수 대비 전환수 산점도
             ax_scat = axes[1, 2]
             if '클릭' in df.columns and '전환수' in df.columns:
                 sns.scatterplot(data=df, x='클릭', y='전환수', hue='매체' if '매체' in df.columns else None, alpha=0.7, s=60, ax=ax_scat)
@@ -191,9 +172,6 @@ if uploaded_file is not None:
             plt.tight_layout()
             st.pyplot(fig)
 
-    # -------------------------------------------------------------------------
-    # TAB 1: 1단계 메인 KPI 영향 지표 평가
-    # -------------------------------------------------------------------------
     MAIN_KPI = '전환수'
     COST_METRICS = ['전환 단가(CPA)', 'CPC', 'CPM']
     TARGET_EVAL_METRICS = ['노출', '클릭', '전환수', 'CTR', 'CPC', 'CPM', '전환률', '객단가']
@@ -233,15 +211,13 @@ if uploaded_file is not None:
 
             with t1_col2:
                 top_df = pd.DataFrame(sorted_ensemble, columns=['지표', '앙상블 점수'])
+                set_korean_font()
                 fig_top, ax_top = plt.subplots(figsize=(8, 4))
                 colors = ['#1D3557' if i < 3 else '#A8DADC' for i in range(len(top_df))]
                 sns.barplot(data=top_df, x='앙상블 점수', y='지표', palette=colors, ax=ax_top)
                 ax_top.set_title('메인 KPI 영향 지표 선별 결과 (TOP 3 강조)', fontsize=12, fontweight='bold')
                 st.pyplot(fig_top)
 
-        # -------------------------------------------------------------------------
-        # TAB 2: 2단계 TOP 3 지표 개선 시뮬레이션
-        # -------------------------------------------------------------------------
         with tab2:
             st.subheader("🔮 TOP 3 지표 10% 개선 시 시뮬레이션 (직관적 수치 변화 브리핑)")
             st.write("지표가 10% 개선되었을 때 예상되는 순증가 전환 건수를 텍스트 형태로 산출합니다.")
@@ -283,9 +259,6 @@ if uploaded_file is not None:
 
                 st.success(f"📌 **[{metric}] {action_type}** ({val_text})\n\n👉 **기대 전환 추가 증가량:** 약 **+{blended_gain:.1f}건** 순증가")
 
-        # -------------------------------------------------------------------------
-        # TAB 3&4: 예산 재배치(감액 & 증액) 시뮬레이션
-        # -------------------------------------------------------------------------
         with tab34:
             st.subheader("⚖️ 예산 재배치 감액 & 증액 시뮬레이션 (1안 vs 2안 시나리오)")
 
@@ -320,7 +293,6 @@ if uploaded_file is not None:
                     if x_budget <= 0: return 0.0
                     return max_conv * (x_budget**n_param) / ((x_budget**n_param) + (k_param**n_param))
 
-                # 감액 계산
                 cut_amounts_1, conv_losses_1 = [], []
                 cut_amounts_2, conv_losses_2 = [], []
 
@@ -367,7 +339,6 @@ if uploaded_file is not None:
                 total_saved_1, total_loss_1 = flexible_camps['cut_1'].sum(), flexible_camps['loss_1'].sum()
                 total_saved_2, total_loss_2 = flexible_camps['cut_2'].sum(), flexible_camps['loss_2'].sum()
 
-                # 증액 계산
                 scale_camps = flexible_camps[(flexible_camps['cut_1'] == 0.0) & (flexible_camps['CPA'] <= target_cpa)].copy()
 
                 def run_scale_simulation(saved_budget, scale_df):
@@ -427,9 +398,6 @@ if uploaded_file is not None:
                 net_gain_1 = add_conv_1 - total_loss_1
                 net_gain_2 = add_conv_2 - total_loss_2
 
-                # -------------------------------------------------------------
-                # 텍스트 브리핑 및 리포트 표시
-                # -------------------------------------------------------------
                 st.markdown("### 📉 3단계. 저효율 캠페인 감액 시뮬레이션")
                 has_cuts = False
                 for _, row in flexible_camps[flexible_camps['cut_1'] > 0].iterrows():
