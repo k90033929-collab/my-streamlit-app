@@ -23,7 +23,7 @@ st.set_page_config(
 )
 
 # -----------------------------------------------------------------------------
-# Font & Style Setup
+# Font & Style Setup (packages.txt 의 fonts-nanum 설치 연동)
 # -----------------------------------------------------------------------------
 @st.cache_resource
 def set_korean_font():
@@ -32,13 +32,19 @@ def set_korean_font():
         '/usr/share/fonts/truetype/nanum/NanumGothic.ttf',
         'C:/Windows/Fonts/malgun.ttf'
     ]
+    font_name = None
     for fp in font_paths:
         if os.path.exists(fp):
             fm.fontManager.addfont(fp)
             font_name = fm.FontProperties(fname=fp).get_name()
-            plt.rc('font', family=font_name)
             break
-    plt.rcParams['axes.unicode_minus'] = False
+    
+    if font_name:
+        plt.rc('font', family=font_name)
+    else:
+        plt.rc('font', family='NanumGothic')
+        
+    plt.rcParams['axes.unicode_minus'] = False # 마이너스 기호 깨짐 방지
 
 set_korean_font()
 
@@ -283,7 +289,6 @@ if uploaded_file is not None:
 
         # -------------------------------------------------------------------------
         # TAB 3&4: 예산 재배치(감액 & 증액) 시뮬레이션
-        # 🛠️ 보완: 단일 '캠페인 구분' 데이터 대응 자동 키 조합
         # -------------------------------------------------------------------------
         with tab34:
             st.subheader("⚖️ 예산 재배치 감액 & 증액 시뮬레이션 (1안 vs 2안 시나리오)")
@@ -295,7 +300,6 @@ if uploaded_file is not None:
             kpi_col = '전환수' if '전환수' in df.columns else None
 
             if budget_col and kpi_col:
-                # 그룹핑 키 자동 설정 (단일 캠페인 구분 대응)
                 group_keys = []
                 if campaign_col: group_keys.append(campaign_col)
                 if media_col and (not campaign_col or df[campaign_col].nunique() <= 1):
