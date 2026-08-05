@@ -8,3 +8,4 @@ openpyxl
 koreanize-matplotlib
 scipy
 scikit-learn
+plotly
