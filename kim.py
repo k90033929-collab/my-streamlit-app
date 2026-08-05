@@ -1,4 +1,6 @@
-import streamlit as st
+import os
+import warnings
+import urllib.request
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
@@ -7,8 +9,7 @@ import seaborn as sns
 from scipy.stats import spearmanr
 from scipy.optimize import minimize
 from sklearn.ensemble import RandomForestRegressor
-import os
-import warnings
+import streamlit as st
 
 # 경고 무시 및 Matplotlib 로깅 차단
 warnings.filterwarnings('ignore')
@@ -23,27 +24,39 @@ st.set_page_config(
 )
 
 # -----------------------------------------------------------------------------
-# Font & Style Setup (packages.txt 의 fonts-nanum 설치 연동)
+# Font & Style Setup (웹 폰트 자동 다운로드 및 강제 로드 방식)
 # -----------------------------------------------------------------------------
 @st.cache_resource
 def set_korean_font():
-    font_paths = [
-        '/usr/share/fonts/truetype/nanum/NanumBarunGothic.ttf',
-        '/usr/share/fonts/truetype/nanum/NanumGothic.ttf',
-        'C:/Windows/Fonts/malgun.ttf'
-    ]
-    font_name = None
-    for fp in font_paths:
-        if os.path.exists(fp):
-            fm.fontManager.addfont(fp)
-            font_name = fm.FontProperties(fname=fp).get_name()
-            break
+    font_filename = "NanumGothic.ttf"
+    font_url = "https://github.com/google/fonts/raw/main/ofl/nanumgothic/NanumGothic-Regular.ttf"
     
-    if font_name:
+    # 폰트 파일이 없으면 웹에서 다운로드
+    if not os.path.exists(font_filename):
+        try:
+            urllib.request.urlretrieve(font_url, font_filename)
+        except Exception as e:
+            st.error(f"폰트 다운로드 실패: {e}")
+            
+    if os.path.exists(font_filename):
+        fm.fontManager.addfont(font_filename)
+        prop = fm.FontProperties(fname=font_filename)
+        font_name = prop.get_name()
         plt.rc('font', family=font_name)
     else:
-        plt.rc('font', family='NanumGothic')
-        
+        # 로컬 기본 폰트 시도
+        font_paths = [
+            '/usr/share/fonts/truetype/nanum/NanumBarunGothic.ttf',
+            '/usr/share/fonts/truetype/nanum/NanumGothic.ttf',
+            'C:/Windows/Fonts/malgun.ttf'
+        ]
+        for fp in font_paths:
+            if os.path.exists(fp):
+                fm.fontManager.addfont(fp)
+                font_name = fm.FontProperties(fname=fp).get_name()
+                plt.rc('font', family=font_name)
+                break
+
     plt.rcParams['axes.unicode_minus'] = False # 마이너스 기호 깨짐 방지
 
 set_korean_font()
